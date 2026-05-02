@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
-import { CalendarDays, Download, Filter, Loader2, Plus, Search } from "lucide-react";
+import { CalendarDays, Download, Filter, Loader2, Plus, Search, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,7 @@ import {
   getCustomerDebt,
   getCustomerName,
   getCustomerPaid,
+  getProductName,
   getToday,
   getSupplierDebt,
   getSupplierImported,
@@ -23,7 +24,7 @@ import {
   sum,
 } from "@/lib/local/calculations";
 import { useWarehouseStore } from "@/lib/local/store";
-import type { InventoryRow, WarehouseData } from "@/lib/local/types";
+import type { InventoryRow, Product, WarehouseData } from "@/lib/local/types";
 import { modulePages, type ModulePageConfig } from "@/lib/module-pages";
 import { cn } from "@/lib/utils";
 
@@ -43,6 +44,15 @@ function formatPhone(value: string | number | null | undefined) {
   }
 
   return /^\d{9}$/.test(phone) ? `0${phone}` : phone;
+}
+
+function formatOrderItems(
+  rows: Array<{ productId: string; quantity: number }>,
+  products: Product[],
+) {
+  return rows
+    .map((row) => `${getProductName(products, row.productId)} x${formatNumber(row.quantity)}`)
+    .join("; ");
 }
 
 function escapeExcelValue(value: unknown) {
@@ -212,6 +222,111 @@ function SelectField({
   );
 }
 
+type OrderLineInput = {
+  id: string;
+  productId: string;
+};
+
+function getLineDefaultPrice(products: Product[], productId: string, mode: "purchase" | "sale") {
+  const product = products.find((item) => item.id === productId) ?? products[0];
+
+  return mode === "purchase" ? product?.importPrice ?? 0 : product?.salePrice ?? 0;
+}
+
+function MultiProductItems({
+  products,
+  mode,
+}: {
+  products: Product[];
+  mode: "purchase" | "sale";
+}) {
+  const firstProductId = products[0]?.id ?? "";
+  const [lines, setLines] = useState<OrderLineInput[]>([
+    { id: `line-${Date.now()}`, productId: firstProductId },
+  ]);
+
+  function updateProduct(lineId: string, productId: string) {
+    setLines((current) =>
+      current.map((line) => (line.id === lineId ? { ...line, productId } : line)),
+    );
+  }
+
+  function addLine() {
+    setLines((current) => [
+      ...current,
+      { id: `line-${Date.now()}-${current.length}`, productId: firstProductId },
+    ]);
+  }
+
+  function removeLine(lineId: string) {
+    setLines((current) => (current.length <= 1 ? current : current.filter((line) => line.id !== lineId)));
+  }
+
+  return (
+    <div className="sm:col-span-2 xl:col-span-4">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-slate-800">Danh sách sản phẩm</p>
+        <Button type="button" variant="secondary" size="sm" onClick={addLine}>
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          Thêm dòng
+        </Button>
+      </div>
+
+      <div className="space-y-2">
+        {lines.map((line, index) => (
+          <div
+            key={line.id}
+            className="grid gap-2 rounded-md border border-cyan-100 bg-white p-3 md:grid-cols-[minmax(220px,1fr)_120px_180px_42px]"
+          >
+            <label className="space-y-1 text-sm">
+              <span className="font-medium text-slate-700">Sản phẩm {index + 1}</span>
+              <select
+                name="itemProductId"
+                value={line.productId}
+                onChange={(event) => updateProduct(line.id, event.target.value)}
+                className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm text-slate-800 outline-none focus:border-cyan-600 focus:ring-2 focus:ring-cyan-600/15"
+                required
+              >
+                {products.map((product) => (
+                  <option key={product.id} value={product.id}>
+                    {product.code} - {product.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <Field label="Số thùng">
+              <Input name="itemQuantity" type="number" min="1" step="1" required defaultValue="1" />
+            </Field>
+
+            <Field label={mode === "purchase" ? "Đơn giá nhập" : "Đơn giá bán"}>
+              <MoneyInput
+                key={`${line.id}-${line.productId}-${mode}`}
+                name="itemUnitPrice"
+                required
+                defaultValue={getLineDefaultPrice(products, line.productId, mode)}
+              />
+            </Field>
+
+            <div className="flex items-end">
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                onClick={() => removeLine(line.id)}
+                disabled={lines.length <= 1}
+                aria-label="Xóa dòng sản phẩm"
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsUsageGuide() {
   return (
     <section className="rounded-md border border-slate-200 bg-white shadow-soft">
@@ -292,37 +407,67 @@ function getRows(pageKey: PageKey, data: WarehouseData, inventory: InventoryRow[
   }
 
   if (pageKey === "purchases") {
-    return data.purchases.map((order) => ({
-      _date: toDateKey(order.orderDate),
-      _status: `${order.status === "confirmed" ? "Đã xác nhận" : "Đã hủy"} ${order.debtAmount > 0 ? "Còn nợ" : "Đã trả đủ"}`,
-      code: order.code,
-      date: formatDate(order.orderDate),
-      supplier: getSupplierName(data.suppliers, order.supplierId),
-      total: formatCurrency(order.totalAmount),
-      paid: formatCurrency(order.paidAmount),
-      status: order.debtAmount > 0 ? "Còn nợ" : "Đã trả đủ",
-    }));
+    const groups = new Map<string, typeof data.purchases>();
+
+    data.purchases.forEach((order) => {
+      groups.set(order.code, [...(groups.get(order.code) ?? []), order]);
+    });
+
+    return Array.from(groups.values()).map((orders) => {
+      const first = orders[0];
+      const totalAmount = sum(orders.map((order) => order.totalAmount));
+      const paidAmount = sum(orders.map((order) => order.paidAmount));
+      const debtAmount = sum(orders.map((order) => order.debtAmount));
+      const quantity = sum(orders.map((order) => order.quantity));
+
+      return {
+        _date: toDateKey(first.orderDate),
+        _status: `${first.status === "confirmed" ? "Đã xác nhận" : "Đã hủy"} ${debtAmount > 0 ? "Còn nợ" : "Đã trả đủ"}`,
+        code: first.code,
+        date: formatDate(first.orderDate),
+        supplier: getSupplierName(data.suppliers, first.supplierId),
+        items: `${orders.length} dòng / ${formatNumber(quantity)} thùng: ${formatOrderItems(orders, data.products)}`,
+        total: formatCurrency(totalAmount),
+        paid: formatCurrency(paidAmount),
+        status: debtAmount > 0 ? "Còn nợ" : "Đã trả đủ",
+      };
+    });
   }
 
   if (pageKey === "sales") {
-    return data.sales.map((order) => ({
-      _date: toDateKey(order.orderDate),
-      _status: [
-        order.status === "confirmed" ? "Đã xác nhận" : order.status === "completed" ? "Hoàn tất" : "Đã hủy",
-        order.deliveryStatus === "delivering"
-          ? "Đang giao"
-          : order.deliveryStatus === "delivered"
-            ? "Đã giao"
-            : "Chờ giao",
-        order.debtAmount > 0 ? "Còn nợ" : "Đã trả đủ",
-      ].join(" "),
-      code: order.code,
-      date: formatDate(order.orderDate),
-      customer: getCustomerName(data.customers, order.customerId),
-      total: formatCurrency(order.totalAmount),
-      paid: formatCurrency(order.paidAmount),
-      status: order.debtAmount > 0 ? "Còn nợ" : "Đã trả đủ",
-    }));
+    const groups = new Map<string, typeof data.sales>();
+
+    data.sales.forEach((order) => {
+      groups.set(order.code, [...(groups.get(order.code) ?? []), order]);
+    });
+
+    return Array.from(groups.values()).map((orders) => {
+      const first = orders[0];
+      const totalAmount = sum(orders.map((order) => order.totalAmount));
+      const paidAmount = sum(orders.map((order) => order.paidAmount));
+      const debtAmount = sum(orders.map((order) => order.debtAmount));
+      const quantity = sum(orders.map((order) => order.quantity));
+
+      return {
+        _date: toDateKey(first.orderDate),
+        _status: [
+          first.status === "confirmed" ? "Đã xác nhận" : first.status === "completed" ? "Hoàn tất" : "Đã hủy",
+          first.deliveryStatus === "delivering"
+            ? "Đang giao"
+            : first.deliveryStatus === "delivered"
+              ? "Đã giao"
+              : "Chờ giao",
+          debtAmount > 0 ? "Còn nợ" : "Đã trả đủ",
+        ].join(" "),
+        code: first.code,
+        date: formatDate(first.orderDate),
+        customer: getCustomerName(data.customers, first.customerId),
+        items: `${orders.length} dòng / ${formatNumber(quantity)} thùng: ${formatOrderItems(orders, data.products)}`,
+        total: formatCurrency(totalAmount),
+        paid: formatCurrency(paidAmount),
+        status: debtAmount > 0 ? "Còn nợ" : "Đã trả đủ",
+      };
+    });
   }
 
   if (pageKey === "inventory") {
@@ -500,22 +645,30 @@ function getStats(
   const stockValue = sum(inventory.map((item) => item.stockValue));
   const revenue = sum(data.sales.map((order) => order.totalAmount));
   const expenses = sum(data.expenses.map((expense) => expense.amount));
+  const saleCodes = new Set(data.sales.map((order) => order.code));
+  const purchaseCodes = new Set(data.purchases.map((order) => order.code));
+  const debtSaleCodes = new Set(
+    data.sales.filter((order) => order.debtAmount > 0).map((order) => order.code),
+  );
+  const debtPurchaseCodes = new Set(
+    data.purchases.filter((order) => order.debtAmount > 0).map((order) => order.code),
+  );
 
   if (pageKey === "sales") {
     return [
-      { label: "Tổng đơn bán", value: String(data.sales.length), tone: "cyan" as const },
+      { label: "Tổng đơn bán", value: String(saleCodes.size), tone: "cyan" as const },
       { label: "Doanh thu", value: formatCurrency(revenue), tone: "green" as const },
       { label: "Khách còn nợ", value: formatCurrency(totalDebtCustomers), tone: "amber" as const },
-      { label: "Đơn còn nợ", value: String(data.sales.filter((order) => order.debtAmount > 0).length), tone: "slate" as const },
+      { label: "Đơn còn nợ", value: String(debtSaleCodes.size), tone: "slate" as const },
     ];
   }
 
   if (pageKey === "purchases") {
     return [
-      { label: "Tổng phiếu nhập", value: String(data.purchases.length), tone: "cyan" as const },
+      { label: "Tổng phiếu nhập", value: String(purchaseCodes.size), tone: "cyan" as const },
       { label: "Giá trị nhập", value: formatCurrency(sum(data.purchases.map((order) => order.totalAmount))), tone: "green" as const },
       { label: "Nợ nhà cung cấp", value: formatCurrency(totalDebtSuppliers), tone: "amber" as const },
-      { label: "Phiếu còn nợ", value: String(data.purchases.filter((order) => order.debtAmount > 0).length), tone: "slate" as const },
+      { label: "Phiếu còn nợ", value: String(debtPurchaseCodes.size), tone: "slate" as const },
     ];
   }
 
@@ -652,13 +805,7 @@ function EntryForm({
               {data.suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
             </SelectField>
           </Field>
-          <Field label="Sản phẩm">
-            <SelectField name="productId" defaultValue={data.products[0]?.id}>
-              {data.products.map((product) => <option key={product.id} value={product.id}>{product.code} - {product.name}</option>)}
-            </SelectField>
-          </Field>
-          <Field label="Số lượng thùng"><Input name="quantity" type="number" min="1" step="1" required /></Field>
-          <Field label="Đơn giá nhập"><MoneyInput name="unitPrice" required defaultValue={data.products[0]?.importPrice ?? 0} /></Field>
+          <MultiProductItems products={data.products} mode="purchase" />
           <Field label="Đã trả"><MoneyInput name="paidAmount" defaultValue="0" /></Field>
           <Field label="Thanh toán"><Input name="paymentMethod" defaultValue="Tiền mặt" /></Field>
           <Field label="Ghi chú"><Input name="note" /></Field>
@@ -673,13 +820,7 @@ function EntryForm({
               {data.customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
             </SelectField>
           </Field>
-          <Field label="Sản phẩm">
-            <SelectField name="productId" defaultValue={data.products[0]?.id}>
-              {data.products.map((product) => <option key={product.id} value={product.id}>{product.code} - {product.name}</option>)}
-            </SelectField>
-          </Field>
-          <Field label="Số lượng thùng"><Input name="quantity" type="number" min="1" step="1" required /></Field>
-          <Field label="Đơn giá bán"><MoneyInput name="unitPrice" required defaultValue={data.products[0]?.salePrice ?? 0} /></Field>
+          <MultiProductItems products={data.products} mode="sale" />
           <Field label="Chiết khấu"><MoneyInput name="discountAmount" defaultValue="0" /></Field>
           <Field label="Phí giao"><MoneyInput name="shippingFee" defaultValue="0" /></Field>
           <Field label="Khách đã trả"><MoneyInput name="paidAmount" defaultValue="0" /></Field>

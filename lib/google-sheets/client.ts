@@ -285,5 +285,19 @@ export async function mutateSheet(
 }
 
 export function formDataToPayload(formData: FormData) {
-  return Object.fromEntries(formData.entries()) as Record<string, FormDataEntryValue>;
+  const payload: Record<string, FormDataEntryValue | FormDataEntryValue[]> = {};
+
+  formData.forEach((value, key) => {
+    const current = payload[key];
+
+    if (Array.isArray(current)) {
+      current.push(value);
+    } else if (current !== undefined) {
+      payload[key] = [current, value];
+    } else {
+      payload[key] = value;
+    }
+  });
+
+  return payload;
 }

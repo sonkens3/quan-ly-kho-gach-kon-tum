@@ -616,42 +616,52 @@ function addSupplier_(payload) {
 function addPurchase_(payload) {
   const purchases = readTable_("purchase_orders");
   const code = nextCode_("PO", purchases.map((order) => order.code));
-  const id = makeId_("purchase");
-  const quantity = number_(payload.quantity);
-  const unitPrice = number_(payload.unitPrice);
-  const totalAmount = quantity * unitPrice;
+  const items = getOrderItems_(payload);
+  const lineTotals = items.map((item) => number_(item.quantity) * number_(item.unitPrice));
+  const totalAmount = lineTotals.reduce((total, value) => total + value, 0);
   const paidAmount = Math.min(number_(payload.paidAmount), totalAmount);
+  const paidShares = allocateAmount_(paidAmount, lineTotals);
   const orderDate = text_(payload.orderDate) || today_();
+  const supplierId = text_(payload.supplierId);
+  const paymentMethod = text_(payload.paymentMethod);
+  const note = text_(payload.note);
+  const createdAt = now_();
 
-  if (!text_(payload.supplierId) || !text_(payload.productId)) throw new Error("Thiếu nhà cung cấp hoặc sản phẩm.");
-  if (quantity <= 0) throw new Error("Số lượng nhập phải lớn hơn 0.");
+  if (!supplierId) throw new Error("Thiếu nhà cung cấp.");
+  if (items.length === 0) throw new Error("Thêm ít nhất một dòng sản phẩm để nhập.");
 
-  appendRow_("purchase_orders", {
-    id,
-    code,
-    supplierId: text_(payload.supplierId),
-    orderDate,
-    productId: text_(payload.productId),
-    quantity,
-    unitPrice,
-    totalAmount,
-    paidAmount,
-    debtAmount: Math.max(totalAmount - paidAmount, 0),
-    paymentMethod: text_(payload.paymentMethod),
-    status: "confirmed",
-    note: text_(payload.note),
-    createdAt: now_(),
-  });
-  appendRow_("stock_movements", {
-    id: makeId_("movement"),
-    productId: text_(payload.productId),
-    movementDate: orderDate,
-    quantity,
-    movementType: "purchase",
-    referenceType: "purchase_order",
-    referenceId: id,
-    note: `Nhập ${code}`,
-    createdAt: now_(),
+  items.forEach((item, index) => {
+    const id = makeId_("purchase");
+    const lineTotal = lineTotals[index] || 0;
+    const linePaid = paidShares[index] || 0;
+
+    appendRow_("purchase_orders", {
+      id,
+      code,
+      supplierId,
+      orderDate,
+      productId: item.productId,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      totalAmount: lineTotal,
+      paidAmount: linePaid,
+      debtAmount: Math.max(lineTotal - linePaid, 0),
+      paymentMethod,
+      status: "confirmed",
+      note,
+      createdAt,
+    });
+    appendRow_("stock_movements", {
+      id: makeId_("movement"),
+      productId: item.productId,
+      movementDate: orderDate,
+      quantity: item.quantity,
+      movementType: "purchase",
+      referenceType: "purchase_order",
+      referenceId: id,
+      note: `Nhập ${code}`,
+      createdAt,
+    });
   });
 
   if (paidAmount > 0) {
@@ -661,71 +671,91 @@ function addPurchase_(payload) {
       direction: "out",
       partyType: "supplier",
       customerId: "",
-      supplierId: text_(payload.supplierId),
+      supplierId,
       referenceType: "purchase_order",
-      referenceId: id,
+      referenceId: code,
       amount: paidAmount,
-      method: text_(payload.paymentMethod),
+      method: paymentMethod,
       note: `Trả tiền ${code}`,
-      createdAt: now_(),
+      createdAt,
     });
   }
 
-  audit_("confirm", "purchase_orders", code, `Xác nhận nhập ${quantity} thùng`);
+  const totalQuantity = items.reduce((total, item) => total + number_(item.quantity), 0);
+  audit_("confirm", "purchase_orders", code, `Xác nhận nhập ${items.length} dòng / ${totalQuantity} thùng`);
 }
 
 function addSale_(payload) {
   const sales = readTable_("sales_orders");
-  const productId = text_(payload.productId);
-  const quantity = number_(payload.quantity);
-  const availableStock = getAvailableStock_(productId);
+  const customerId = text_(payload.customerId);
+  const items = getOrderItems_(payload);
 
-  if (!text_(payload.customerId) || !productId) throw new Error("Thiếu khách hàng hoặc sản phẩm.");
-  if (quantity <= 0) throw new Error("Số lượng bán phải lớn hơn 0.");
-  if (availableStock < quantity) throw new Error(`Không đủ tồn kho. Hiện còn ${availableStock} thùng.`);
+  if (!customerId) throw new Error("Thiếu khách hàng.");
+  if (items.length === 0) throw new Error("Thêm ít nhất một dòng sản phẩm để bán.");
+
+  const requirements = getProductRequirements_(items);
+  Object.keys(requirements).forEach((productId) => {
+    const availableStock = getAvailableStock_(productId);
+    const requiredQuantity = number_(requirements[productId]);
+    if (availableStock < requiredQuantity) {
+      throw new Error(`Không đủ tồn kho ${getProductNameById_(productId)}. Hiện còn ${availableStock} thùng, cần ${requiredQuantity} thùng.`);
+    }
+  });
 
   const code = nextCode_("SO", sales.map((order) => order.code));
-  const id = makeId_("sale");
   const orderDate = text_(payload.orderDate) || today_();
-  const unitPrice = number_(payload.unitPrice);
   const discountAmount = number_(payload.discountAmount);
   const shippingFee = number_(payload.shippingFee);
-  const subtotalAmount = quantity * unitPrice;
+  const lineSubtotals = items.map((item) => number_(item.quantity) * number_(item.unitPrice));
+  const subtotalAmount = lineSubtotals.reduce((total, value) => total + value, 0);
   const totalAmount = Math.max(subtotalAmount - discountAmount + shippingFee, 0);
   const paidAmount = Math.min(number_(payload.paidAmount), totalAmount);
-  const debtAmount = Math.max(totalAmount - paidAmount, 0);
+  const totalShares = allocateAmount_(totalAmount, lineSubtotals);
+  const paidShares = allocateAmount_(paidAmount, totalShares);
+  const discountShares = allocateAmount_(Math.min(discountAmount, subtotalAmount), lineSubtotals);
+  const shippingShares = allocateAmount_(shippingFee, lineSubtotals);
+  const paymentMethod = text_(payload.paymentMethod);
+  const note = text_(payload.note);
+  const createdAt = now_();
 
-  appendRow_("sales_orders", {
-    id,
-    code,
-    customerId: text_(payload.customerId),
-    orderDate,
-    productId,
-    quantity,
-    unitPrice,
-    discountAmount,
-    shippingFee,
-    subtotalAmount,
-    totalAmount,
-    paidAmount,
-    debtAmount,
-    paymentMethod: text_(payload.paymentMethod),
-    deliveryStatus: "pending",
-    paymentStatus: debtAmount <= 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid",
-    status: "confirmed",
-    note: text_(payload.note),
-    createdAt: now_(),
-  });
-  appendRow_("stock_movements", {
-    id: makeId_("movement"),
-    productId,
-    movementDate: orderDate,
-    quantity: -quantity,
-    movementType: "sale",
-    referenceType: "sales_order",
-    referenceId: id,
-    note: `Bán ${code}`,
-    createdAt: now_(),
+  items.forEach((item, index) => {
+    const id = makeId_("sale");
+    const lineTotal = totalShares[index] || 0;
+    const linePaid = paidShares[index] || 0;
+    const debtAmount = Math.max(lineTotal - linePaid, 0);
+
+    appendRow_("sales_orders", {
+      id,
+      code,
+      customerId,
+      orderDate,
+      productId: item.productId,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      discountAmount: discountShares[index] || 0,
+      shippingFee: shippingShares[index] || 0,
+      subtotalAmount: lineSubtotals[index] || 0,
+      totalAmount: lineTotal,
+      paidAmount: linePaid,
+      debtAmount,
+      paymentMethod,
+      deliveryStatus: "pending",
+      paymentStatus: debtAmount <= 0 ? "paid" : linePaid > 0 ? "partial" : "unpaid",
+      status: "confirmed",
+      note,
+      createdAt,
+    });
+    appendRow_("stock_movements", {
+      id: makeId_("movement"),
+      productId: item.productId,
+      movementDate: orderDate,
+      quantity: -number_(item.quantity),
+      movementType: "sale",
+      referenceType: "sales_order",
+      referenceId: id,
+      note: `Bán ${code}`,
+      createdAt,
+    });
   });
 
   if (paidAmount > 0) {
@@ -734,18 +764,19 @@ function addSale_(payload) {
       paymentDate: orderDate,
       direction: "in",
       partyType: "customer",
-      customerId: text_(payload.customerId),
+      customerId,
       supplierId: "",
       referenceType: "sales_order",
-      referenceId: id,
+      referenceId: code,
       amount: paidAmount,
-      method: text_(payload.paymentMethod),
+      method: paymentMethod,
       note: `Thu tiền ${code}`,
-      createdAt: now_(),
+      createdAt,
     });
   }
 
-  audit_("confirm", "sales_orders", code, `Xác nhận bán ${quantity} thùng`);
+  const totalQuantity = items.reduce((total, item) => total + number_(item.quantity), 0);
+  audit_("confirm", "sales_orders", code, `Xác nhận bán ${items.length} dòng / ${totalQuantity} thùng`);
 }
 
 function recordCustomerPayment_(payload) {
@@ -969,6 +1000,66 @@ function text_(value) {
 function number_(value) {
   const parsed = Number(String(value === undefined || value === null ? 0 : value).replace(/[^\d.-]/g, ""));
   return isFinite(parsed) ? parsed : 0;
+}
+
+function array_(value) {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null) return [];
+  return [value];
+}
+
+function getOrderItems_(payload) {
+  const productIds = array_(payload.itemProductId);
+  const quantities = array_(payload.itemQuantity);
+  const unitPrices = array_(payload.itemUnitPrice);
+
+  if (productIds.length > 0) {
+    return productIds
+      .map((productId, index) => ({
+        productId: text_(productId),
+        quantity: number_(quantities[index]),
+        unitPrice: number_(unitPrices[index]),
+      }))
+      .filter((item) => item.productId && item.quantity > 0);
+  }
+
+  const legacyItem = {
+    productId: text_(payload.productId),
+    quantity: number_(payload.quantity),
+    unitPrice: number_(payload.unitPrice),
+  };
+
+  return legacyItem.productId && legacyItem.quantity > 0 ? [legacyItem] : [];
+}
+
+function allocateAmount_(total, weights) {
+  const weightTotal = weights.reduce((sum, weight) => sum + number_(weight), 0);
+
+  if (weights.length === 0) return [];
+  if (weightTotal <= 0) return weights.map(() => 0);
+
+  let allocated = 0;
+  return weights.map((weight, index) => {
+    if (index === weights.length - 1) {
+      return Math.max(total - allocated, 0);
+    }
+
+    const share = Math.min(Math.round((total * number_(weight)) / weightTotal), total - allocated);
+    allocated += share;
+    return Math.max(share, 0);
+  });
+}
+
+function getProductRequirements_(items) {
+  return items.reduce((result, item) => {
+    result[item.productId] = number_(result[item.productId]) + number_(item.quantity);
+    return result;
+  }, {});
+}
+
+function getProductNameById_(productId) {
+  const product = readTable_("products").find((item) => item.id === productId);
+  return product ? `${product.code} - ${product.name}` : productId;
 }
 
 function now_() {

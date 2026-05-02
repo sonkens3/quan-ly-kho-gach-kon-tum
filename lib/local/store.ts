@@ -15,9 +15,11 @@ import { createBackup, createSeedLocalBackup, localDataKey, type LocalBackup } f
 import {
   computeInventory,
   getAvailableStock,
+  getProductName,
   getToday,
   makeId,
   nextCode,
+  sum,
 } from "@/lib/local/calculations";
 import type {
   AuditLog,
@@ -140,6 +142,67 @@ function toNumber(value: FormDataEntryValue | null) {
 
 function toText(value: FormDataEntryValue | null) {
   return String(value ?? "").trim();
+}
+
+type OrderItemInput = {
+  productId: string;
+  quantity: number;
+  unitPrice: number;
+};
+
+function getOrderItems(formData: FormData): OrderItemInput[] {
+  const productIds = formData.getAll("itemProductId").map((value) => toText(value));
+  const quantities = formData.getAll("itemQuantity").map((value) => toNumber(value));
+  const unitPrices = formData.getAll("itemUnitPrice").map((value) => toNumber(value));
+
+  if (productIds.length > 0) {
+    return productIds
+      .map((productId, index) => ({
+        productId,
+        quantity: quantities[index] ?? 0,
+        unitPrice: unitPrices[index] ?? 0,
+      }))
+      .filter((item) => item.productId && item.quantity > 0);
+  }
+
+  return [
+    {
+      productId: toText(formData.get("productId")),
+      quantity: toNumber(formData.get("quantity")),
+      unitPrice: toNumber(formData.get("unitPrice")),
+    },
+  ].filter((item) => item.productId && item.quantity > 0);
+}
+
+function allocateAmount(total: number, weights: number[]) {
+  const weightTotal = sum(weights);
+
+  if (weights.length === 0) {
+    return [];
+  }
+
+  if (weightTotal <= 0) {
+    return weights.map(() => 0);
+  }
+
+  let allocated = 0;
+
+  return weights.map((weight, index) => {
+    if (index === weights.length - 1) {
+      return Math.max(total - allocated, 0);
+    }
+
+    const share = Math.min(Math.round((total * weight) / weightTotal), total - allocated);
+    allocated += share;
+    return Math.max(share, 0);
+  });
+}
+
+function getProductRequirements(items: OrderItemInput[]) {
+  return items.reduce<Record<string, number>>((result, item) => {
+    result[item.productId] = (result[item.productId] ?? 0) + item.quantity;
+    return result;
+  }, {});
 }
 
 export function useWarehouseStore() {
@@ -400,68 +463,80 @@ export function useWarehouseStore() {
       "addPurchase",
       formData,
       (current) => {
-        const quantity = toNumber(formData.get("quantity"));
-        const unitPrice = toNumber(formData.get("unitPrice"));
-        const paidAmount = toNumber(formData.get("paidAmount"));
-        const totalAmount = quantity * unitPrice;
-        const debtAmount = Math.max(totalAmount - paidAmount, 0);
+        const items = getOrderItems(formData);
+        const lineTotals = items.map((item) => item.quantity * item.unitPrice);
+        const totalAmount = sum(lineTotals);
+        const paidInput = toNumber(formData.get("paidAmount"));
+        const paidAmount = Math.min(paidInput, totalAmount);
+        const paidShares = allocateAmount(paidAmount, lineTotals);
         const code = nextCode("PO", current.purchases.map((order) => order.code));
-        const id = makeId("purchase");
         const orderDate = toText(formData.get("orderDate")) || getToday();
+        const supplierId = toText(formData.get("supplierId"));
+        const paymentMethod = toText(formData.get("paymentMethod"));
+        const note = toText(formData.get("note"));
+        const createdAt = new Date().toISOString();
+        const purchases: PurchaseOrder[] = items.map((item, index) => {
+          const lineTotal = lineTotals[index] ?? 0;
+          const linePaid = paidShares[index] ?? 0;
 
-        const purchase: PurchaseOrder = {
-          id,
-          code,
-          supplierId: toText(formData.get("supplierId")),
-          orderDate,
-          productId: toText(formData.get("productId")),
-          quantity,
-          unitPrice,
-          totalAmount,
-          paidAmount: Math.min(paidAmount, totalAmount),
-          debtAmount,
-          paymentMethod: toText(formData.get("paymentMethod")),
-          status: "confirmed",
-          note: toText(formData.get("note")),
-          createdAt: new Date().toISOString(),
-        };
-
-        const movement: StockMovement = {
+          return {
+            id: makeId("purchase"),
+            code,
+            supplierId,
+            orderDate,
+            productId: item.productId,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            totalAmount: lineTotal,
+            paidAmount: linePaid,
+            debtAmount: Math.max(lineTotal - linePaid, 0),
+            paymentMethod,
+            status: "confirmed",
+            note,
+            createdAt,
+          };
+        });
+        const movements: StockMovement[] = purchases.map((purchase) => ({
           id: makeId("movement"),
           productId: purchase.productId,
           movementDate: orderDate,
-          quantity,
+          quantity: purchase.quantity,
           movementType: "purchase",
           referenceType: "purchase_order",
-          referenceId: id,
+          referenceId: purchase.id,
           note: `Nhập ${code}`,
-          createdAt: new Date().toISOString(),
-        };
+          createdAt,
+        }));
 
         const payment: Payment | null =
-          purchase.paidAmount > 0
+          paidAmount > 0
             ? {
                 id: makeId("payment"),
                 paymentDate: orderDate,
                 direction: "out",
                 partyType: "supplier",
-                supplierId: purchase.supplierId,
+                supplierId,
                 referenceType: "purchase_order",
-                referenceId: id,
-                amount: purchase.paidAmount,
-                method: purchase.paymentMethod,
+                referenceId: code,
+                amount: paidAmount,
+                method: paymentMethod,
                 note: `Trả tiền ${code}`,
-                createdAt: new Date().toISOString(),
+                createdAt,
               }
             : null;
 
         return {
           ...current,
-          purchases: [purchase, ...current.purchases],
-          stockMovements: [movement, ...current.stockMovements],
+          purchases: [...purchases, ...current.purchases],
+          stockMovements: [...movements, ...current.stockMovements],
           payments: payment ? [payment, ...current.payments] : current.payments,
           auditLogs: [
-            makeAudit("confirm", "purchase_orders", code, `Xác nhận nhập ${quantity} thùng`),
+            makeAudit(
+              "confirm",
+              "purchase_orders",
+              code,
+              `Xác nhận nhập ${items.length} dòng / ${sum(items.map((item) => item.quantity))} thùng`,
+            ),
             ...current.auditLogs,
           ],
         };
@@ -481,68 +556,82 @@ export function useWarehouseStore() {
       return { ok: false, message: "Dữ liệu chưa sẵn sàng." };
     }
 
-    const productId = toText(formData.get("productId"));
-    const quantity = toNumber(formData.get("quantity"));
-    const availableStock = getAvailableStock(data, productId);
+    const items = getOrderItems(formData);
 
-    if (quantity <= 0) {
-      const message = "Số lượng bán phải lớn hơn 0.";
+    if (items.length === 0) {
+      const message = "Thêm ít nhất một dòng sản phẩm để bán.";
       setLastMessage(message);
       return { ok: false, message };
     }
 
-    if (availableStock < quantity) {
-      const message = `Không đủ tồn kho. Hiện còn ${availableStock} thùng.`;
-      setLastMessage(message);
-      return { ok: false, message };
+    const requirements = getProductRequirements(items);
+
+    for (const [productId, requiredQuantity] of Object.entries(requirements)) {
+      const availableStock = getAvailableStock(data, productId);
+
+      if (availableStock < requiredQuantity) {
+        const message = `Không đủ tồn kho ${getProductName(data.products, productId)}. Hiện còn ${availableStock} thùng, cần ${requiredQuantity} thùng.`;
+        setLastMessage(message);
+        return { ok: false, message };
+      }
     }
 
     return commit((current) => {
-      const unitPrice = toNumber(formData.get("unitPrice"));
       const discountAmount = toNumber(formData.get("discountAmount"));
       const shippingFee = toNumber(formData.get("shippingFee"));
       const paidAmountInput = toNumber(formData.get("paidAmount"));
-      const subtotalAmount = quantity * unitPrice;
+      const lineSubtotals = items.map((item) => item.quantity * item.unitPrice);
+      const subtotalAmount = sum(lineSubtotals);
       const totalAmount = Math.max(subtotalAmount - discountAmount + shippingFee, 0);
       const paidAmount = Math.min(paidAmountInput, totalAmount);
-      const debtAmount = Math.max(totalAmount - paidAmount, 0);
+      const totalShares = allocateAmount(totalAmount, lineSubtotals);
+      const paidShares = allocateAmount(paidAmount, totalShares);
+      const discountShares = allocateAmount(Math.min(discountAmount, subtotalAmount), lineSubtotals);
+      const shippingShares = allocateAmount(shippingFee, lineSubtotals);
       const code = nextCode("SO", current.sales.map((order) => order.code));
-      const id = makeId("sale");
       const orderDate = toText(formData.get("orderDate")) || getToday();
+      const customerId = toText(formData.get("customerId"));
+      const paymentMethod = toText(formData.get("paymentMethod"));
+      const note = toText(formData.get("note"));
+      const createdAt = new Date().toISOString();
+      const sales: SalesOrder[] = items.map((item, index) => {
+        const lineTotal = totalShares[index] ?? 0;
+        const linePaid = paidShares[index] ?? 0;
+        const debtAmount = Math.max(lineTotal - linePaid, 0);
 
-      const sale: SalesOrder = {
-        id,
-        code,
-        customerId: toText(formData.get("customerId")),
-        orderDate,
-        productId,
-        quantity,
-        unitPrice,
-        discountAmount,
-        shippingFee,
-        subtotalAmount,
-        totalAmount,
-        paidAmount,
-        debtAmount,
-        paymentMethod: toText(formData.get("paymentMethod")),
-        deliveryStatus: "pending",
-        paymentStatus: debtAmount <= 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid",
-        status: "confirmed",
-        note: toText(formData.get("note")),
-        createdAt: new Date().toISOString(),
-      };
-
-      const movement: StockMovement = {
+        return {
+          id: makeId("sale"),
+          code,
+          customerId,
+          orderDate,
+          productId: item.productId,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          discountAmount: discountShares[index] ?? 0,
+          shippingFee: shippingShares[index] ?? 0,
+          subtotalAmount: lineSubtotals[index] ?? 0,
+          totalAmount: lineTotal,
+          paidAmount: linePaid,
+          debtAmount,
+          paymentMethod,
+          deliveryStatus: "pending",
+          paymentStatus: debtAmount <= 0 ? "paid" : linePaid > 0 ? "partial" : "unpaid",
+          status: "confirmed",
+          note,
+          createdAt,
+        };
+      });
+      const movements: StockMovement[] = sales.map((sale) => ({
         id: makeId("movement"),
-        productId,
+        productId: sale.productId,
         movementDate: orderDate,
-        quantity: -quantity,
+        quantity: -sale.quantity,
         movementType: "sale",
         referenceType: "sales_order",
-        referenceId: id,
+        referenceId: sale.id,
         note: `Bán ${code}`,
-        createdAt: new Date().toISOString(),
-      };
+        createdAt,
+      }));
 
       const payment: Payment | null =
         paidAmount > 0
@@ -551,23 +640,28 @@ export function useWarehouseStore() {
               paymentDate: orderDate,
               direction: "in",
               partyType: "customer",
-              customerId: sale.customerId,
+              customerId,
               referenceType: "sales_order",
-              referenceId: id,
+              referenceId: code,
               amount: paidAmount,
-              method: sale.paymentMethod,
+              method: paymentMethod,
               note: `Thu tiền ${code}`,
-              createdAt: new Date().toISOString(),
+              createdAt,
             }
           : null;
 
       return {
         ...current,
-        sales: [sale, ...current.sales],
-        stockMovements: [movement, ...current.stockMovements],
+        sales: [...sales, ...current.sales],
+        stockMovements: [...movements, ...current.stockMovements],
         payments: payment ? [payment, ...current.payments] : current.payments,
         auditLogs: [
-          makeAudit("confirm", "sales_orders", code, `Xác nhận bán ${quantity} thùng`),
+          makeAudit(
+            "confirm",
+            "sales_orders",
+            code,
+            `Xác nhận bán ${items.length} dòng / ${sum(items.map((item) => item.quantity))} thùng`,
+          ),
           ...current.auditLogs,
         ],
       };

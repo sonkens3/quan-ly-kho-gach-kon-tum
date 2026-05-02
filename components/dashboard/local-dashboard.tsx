@@ -38,6 +38,8 @@ export function LocalDashboard() {
   const today = getToday();
   const todaySales = data.sales.filter((order) => order.orderDate === today);
   const todayPurchases = data.purchases.filter((order) => order.orderDate === today);
+  const todaySaleCodes = new Set(todaySales.map((order) => order.code));
+  const todayPurchaseCodes = new Set(todayPurchases.map((order) => order.code));
   const todayPaymentsIn = data.payments.filter(
     (payment) => payment.paymentDate === today && payment.direction === "in",
   );
@@ -168,12 +170,12 @@ export function LocalDashboard() {
         {[
           {
             title: "Đơn bán hôm nay",
-            value: String(todaySales.length),
+            value: String(todaySaleCodes.size),
             icon: ShoppingCart,
           },
           {
             title: "Phiếu nhập hôm nay",
-            value: String(todayPurchases.length),
+            value: String(todayPurchaseCodes.size),
             icon: Truck,
           },
           {
