@@ -1,8 +1,10 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element */
+
 import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
-import { CalendarDays, Download, Filter, Loader2, Plus, Search, Trash2 } from "lucide-react";
+import { CalendarDays, Download, Filter, ImageIcon, Loader2, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +33,127 @@ import { cn } from "@/lib/utils";
 type PageKey = keyof typeof modulePages;
 
 type Row = Record<string, string>;
+
+type ProductImageTarget = {
+  id: string;
+  code: string;
+  name: string;
+  imageUrl: string;
+};
+
+type CompressedProductImage = {
+  dataUrl: string;
+  fileName: string;
+  size: number;
+};
+
+const maxProductImageSide = 900;
+const maxProductImageBytes = 360 * 1024;
+const productImageSides = [maxProductImageSide, 760, 640];
+const productImageQualities = [0.72, 0.64, 0.56, 0.48];
+
+function getImageDataSize(dataUrl: string) {
+  const base64 = dataUrl.split(",")[1] ?? "";
+  return Math.ceil((base64.length * 3) / 4);
+}
+
+function loadImageFile(file: File) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Không đọc được file ảnh."));
+    };
+    image.src = url;
+  });
+}
+
+function makeCompressedFileName(fileName: string) {
+  const baseName = fileName
+    .replace(/\.[^.]+$/, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\w.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+
+  return `${baseName || "anh-san-pham"}.jpg`;
+}
+
+async function compressProductImage(file: File): Promise<CompressedProductImage> {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Chỉ chọn file ảnh sản phẩm.");
+  }
+
+  const image = await loadImageFile(file);
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    throw new Error("Trình duyệt không hỗ trợ nén ảnh.");
+  }
+
+  let bestDataUrl = "";
+  let bestSize = Number.POSITIVE_INFINITY;
+
+  for (const maxSide of productImageSides) {
+    const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+    const width = Math.max(1, Math.round(image.naturalWidth * scale));
+    const height = Math.max(1, Math.round(image.naturalHeight * scale));
+
+    canvas.width = width;
+    canvas.height = height;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+
+    for (const quality of productImageQualities) {
+      const dataUrl = canvas.toDataURL("image/jpeg", quality);
+      const size = getImageDataSize(dataUrl);
+
+      if (size < bestSize) {
+        bestDataUrl = dataUrl;
+        bestSize = size;
+      }
+
+      if (size <= maxProductImageBytes) {
+        return {
+          dataUrl,
+          fileName: makeCompressedFileName(file.name),
+          size,
+        };
+      }
+    }
+  }
+
+  return {
+    dataUrl: bestDataUrl,
+    fileName: makeCompressedFileName(file.name),
+    size: bestSize,
+  };
+}
+
+async function attachCompressedImage(formData: FormData) {
+  const file = formData.get("imageFile");
+
+  formData.delete("imageFile");
+
+  if (!(file instanceof File) || file.size <= 0) {
+    return formData;
+  }
+
+  const compressed = await compressProductImage(file);
+  formData.set("imageData", compressed.dataUrl);
+  formData.set("imageFileName", compressed.fileName);
+  formData.set("imageSize", String(compressed.size));
+  return formData;
+}
 
 function normalizeFilterValue(value: string) {
   return value.trim().toLowerCase();
@@ -222,6 +345,50 @@ function SelectField({
   );
 }
 
+function ProductImageCell({
+  row,
+  onEdit,
+  onPreview,
+}: {
+  row: Row;
+  onEdit: (target: ProductImageTarget) => void;
+  onPreview: (target: ProductImageTarget) => void;
+}) {
+  const target: ProductImageTarget = {
+    id: row._productId,
+    code: row._productCode,
+    name: row._productName,
+    imageUrl: row._imageUrl,
+  };
+
+  if (!target.id) {
+    return <span className="text-slate-400">-</span>;
+  }
+
+  return (
+    <div className="flex items-center justify-center gap-2">
+      {target.imageUrl ? (
+        <button
+          type="button"
+          onClick={() => onPreview(target)}
+          className="h-12 w-12 overflow-hidden rounded-md border border-slate-200 bg-slate-50"
+          title="Xem ảnh lớn"
+        >
+          <img src={target.imageUrl} alt={target.name} className="h-full w-full object-cover" loading="lazy" />
+        </button>
+      ) : (
+        <span className="flex h-12 w-12 items-center justify-center rounded-md border border-dashed border-slate-300 bg-slate-50 text-slate-400">
+          <ImageIcon className="h-5 w-5" aria-hidden="true" />
+        </span>
+      )}
+      <Button type="button" variant="secondary" size="sm" onClick={() => onEdit(target)}>
+        <Pencil className="h-4 w-4" aria-hidden="true" />
+        {target.imageUrl ? "Đổi" : "Thêm"}
+      </Button>
+    </div>
+  );
+}
+
 type OrderLineInput = {
   id: string;
   productId: string;
@@ -368,8 +535,13 @@ export function SettingsUsageGuide() {
 function getRows(pageKey: PageKey, data: WarehouseData, inventory: InventoryRow[] = []): Row[] {
   if (pageKey === "products") {
     return data.products.map((product) => ({
+      _productId: product.id,
+      _productCode: product.code,
+      _productName: product.name,
+      _imageUrl: product.imageUrl ?? "",
       _date: toDateKey(product.createdAt),
       _status: product.isActive ? "Đang bán" : "Ngừng bán",
+      image: product.imageUrl ? "Có ảnh" : "Chưa có ảnh",
       code: product.code,
       name: product.name,
       category: product.category,
@@ -472,6 +644,10 @@ function getRows(pageKey: PageKey, data: WarehouseData, inventory: InventoryRow[
 
   if (pageKey === "inventory") {
     return inventory.map((item) => ({
+      _productId: item.id,
+      _productCode: item.code,
+      _productName: item.name,
+      _imageUrl: item.imageUrl ?? "",
       _date: toDateKey(item.createdAt),
       _status:
         item.stockStatus === "out_of_stock"
@@ -481,6 +657,7 @@ function getRows(pageKey: PageKey, data: WarehouseData, inventory: InventoryRow[
             : item.stockStatus === "inactive"
               ? "Ngừng bán"
               : "Còn hàng Đang bán",
+      image: item.imageUrl ? "Có ảnh" : "Chưa có ảnh",
       code: item.code,
       name: item.name,
       size: item.size,
@@ -774,6 +951,9 @@ function EntryForm({
           </Field>
           <Field label="Tồn tối thiểu"><Input name="minStock" type="number" min="0" defaultValue="0" /></Field>
           <Field label="Ghi chú"><Input name="note" placeholder="Ghi chú" /></Field>
+          <Field label="Ảnh mẫu">
+            <Input name="imageFile" type="file" accept="image/*" />
+          </Field>
         </>
       ) : null}
 
@@ -897,6 +1077,9 @@ export function LocalWorkspacePage({ pageKey }: { pageKey: PageKey }) {
   const [dateFilter, setDateFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("Tất cả");
   const [isSaving, setIsSaving] = useState(false);
+  const [imageEditor, setImageEditor] = useState<ProductImageTarget | null>(null);
+  const [imagePreview, setImagePreview] = useState<ProductImageTarget | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
   const savingRef = useRef(false);
 
   const rows = useMemo<Row[]>(() => {
@@ -950,15 +1133,17 @@ export function LocalWorkspacePage({ pageKey }: { pageKey: PageKey }) {
 
     savingRef.current = true;
     setIsSaving(true);
+    setImageError(null);
 
     try {
       await new Promise<void>((resolve) => {
         window.requestAnimationFrame(() => resolve());
       });
 
+      const preparedFormData = pageKey === "products" ? await attachCompressedImage(formData) : formData;
       const result =
         pageKey === "products"
-          ? await actions.addProduct(formData)
+          ? await actions.addProduct(preparedFormData)
           : pageKey === "customers"
             ? await actions.addCustomer(formData)
             : pageKey === "suppliers"
@@ -978,6 +1163,38 @@ export function LocalWorkspacePage({ pageKey }: { pageKey: PageKey }) {
       if (result.ok) {
         setShowForm(false);
       }
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "Không xử lý được ảnh sản phẩm.");
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
+    }
+  }
+
+  async function handleProductImageSubmit(formData: FormData) {
+    if (savingRef.current) {
+      return;
+    }
+
+    savingRef.current = true;
+    setIsSaving(true);
+    setImageError(null);
+
+    try {
+      const preparedFormData = await attachCompressedImage(formData);
+
+      if (!preparedFormData.get("imageData") && !preparedFormData.get("clearImage")) {
+        setImageError("Chọn một ảnh sản phẩm trước khi lưu.");
+        return;
+      }
+
+      const result = await actions.updateProductImage(preparedFormData);
+
+      if (result.ok) {
+        setImageEditor(null);
+      }
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "Không cập nhật được ảnh sản phẩm.");
     } finally {
       savingRef.current = false;
       setIsSaving(false);
@@ -1042,6 +1259,12 @@ export function LocalWorkspacePage({ pageKey }: { pageKey: PageKey }) {
       {lastMessage ? (
         <div className="rounded-md border border-cyan-200 bg-cyan-50 px-3 py-2 text-sm font-medium text-cyan-800">
           {lastMessage}
+        </div>
+      ) : null}
+
+      {imageError ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+          {imageError}
         </div>
       ) : null}
 
@@ -1146,7 +1369,11 @@ export function LocalWorkspacePage({ pageKey }: { pageKey: PageKey }) {
                           column.align === "center" && "text-center",
                         )}
                       >
-                        {row[column.key] ?? "-"}
+                        {column.key === "image" ? (
+                          <ProductImageCell row={row} onEdit={setImageEditor} onPreview={setImagePreview} />
+                        ) : (
+                          row[column.key] ?? "-"
+                        )}
                       </td>
                     ))}
                   </tr>
@@ -1165,6 +1392,92 @@ export function LocalWorkspacePage({ pageKey }: { pageKey: PageKey }) {
           </table>
         </div>
       </section>
+
+      {imageEditor ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/30 px-4 backdrop-blur-[1px]">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleProductImageSubmit(new FormData(event.currentTarget));
+            }}
+            className="w-full max-w-lg rounded-md border border-slate-200 bg-white p-4 shadow-soft"
+          >
+            <input type="hidden" name="productId" value={imageEditor.id} />
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-cyan-700">Ảnh sản phẩm</p>
+                <h2 className="mt-1 text-lg font-semibold text-slate-950">
+                  {imageEditor.code} - {imageEditor.name}
+                </h2>
+              </div>
+              <Button type="button" variant="secondary" size="icon" onClick={() => setImageEditor(null)}>
+                <X className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </div>
+
+            {imageEditor.imageUrl ? (
+              <button
+                type="button"
+                onClick={() => setImagePreview(imageEditor)}
+                className="mt-4 block aspect-[4/3] w-full overflow-hidden rounded-md border border-slate-200 bg-slate-50"
+              >
+                <img src={imageEditor.imageUrl} alt={imageEditor.name} className="h-full w-full object-contain" />
+              </button>
+            ) : null}
+
+            <div className="mt-4">
+              <Field label="Chọn ảnh từ máy">
+                <Input name="imageFile" type="file" accept="image/*" />
+              </Field>
+            </div>
+
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              {imageEditor.imageUrl ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={isSaving}
+                  onClick={() => {
+                    const formData = new FormData();
+                    formData.set("productId", imageEditor.id);
+                    formData.set("clearImage", "1");
+                    void handleProductImageSubmit(formData);
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  Gỡ ảnh
+                </Button>
+              ) : null}
+              <Button type="submit" disabled={isSaving}>
+                {isSaving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Upload className="h-4 w-4" aria-hidden="true" />
+                )}
+                {isSaving ? "Đang lưu..." : "Lưu ảnh"}
+              </Button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {imagePreview ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 py-6">
+          <div className="w-full max-w-4xl">
+            <div className="mb-3 flex items-center justify-between gap-3 text-white">
+              <p className="text-sm font-medium">
+                {imagePreview.code} - {imagePreview.name}
+              </p>
+              <Button type="button" variant="secondary" size="icon" onClick={() => setImagePreview(null)}>
+                <X className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </div>
+            <div className="max-h-[78vh] overflow-hidden rounded-md bg-white p-2">
+              <img src={imagePreview.imageUrl} alt={imagePreview.name} className="mx-auto max-h-[74vh] w-auto max-w-full object-contain" />
+            </div>
+          </div>
+        </div>
+      ) : null}
 
     </div>
   );

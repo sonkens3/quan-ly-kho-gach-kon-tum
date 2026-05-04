@@ -17,6 +17,7 @@ const TABLES = {
     "isActive",
     "note",
     "createdAt",
+    "imageUrl",
   ],
   customers: ["id", "name", "phone", "address", "customerGroup", "note", "createdAt"],
   suppliers: ["id", "name", "phone", "address", "contactPerson", "note", "createdAt"],
@@ -103,6 +104,7 @@ const DRIVE_BACKUP_FOLDER_NAME = "KhoGachKonTum-Backups";
 const DRIVE_BACKUP_LATEST_FILE = "kho-gach-backup-latest.json";
 const DRIVE_BACKUP_FILE_PREFIX = "kho-gach-backup-";
 const DRIVE_BACKUP_KEEP_FILES = 100;
+const DRIVE_PRODUCT_IMAGES_FOLDER_NAME = "KhoGachKonTum-ProductImages";
 
 const NUMBER_FIELDS = new Set([
   "piecesPerBox",
@@ -277,6 +279,7 @@ function mutate_(type, payload) {
 
   try {
     if (type === "addProduct") addProduct_(payload);
+    else if (type === "updateProductImage") updateProductImage_(payload);
     else if (type === "addCustomer") addCustomer_(payload);
     else if (type === "addSupplier") addSupplier_(payload);
     else if (type === "addPurchase") addPurchase_(payload);
@@ -461,6 +464,78 @@ function getDriveBackupFolder_() {
   return DriveApp.createFolder(DRIVE_BACKUP_FOLDER_NAME);
 }
 
+function getProductImagesFolder_() {
+  const folders = DriveApp.getFoldersByName(DRIVE_PRODUCT_IMAGES_FOLDER_NAME);
+
+  if (folders.hasNext()) {
+    return folders.next();
+  }
+
+  const folder = DriveApp.createFolder(DRIVE_PRODUCT_IMAGES_FOLDER_NAME);
+  folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  return folder;
+}
+
+function saveProductImage_(payload, productCode) {
+  const imageData = text_(payload.imageData);
+
+  if (!imageData) {
+    return text_(payload.imageUrl);
+  }
+
+  const match = imageData.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+
+  if (!match) {
+    throw new Error("Dữ liệu ảnh không hợp lệ.");
+  }
+
+  const mimeType = match[1] || "image/jpeg";
+  const bytes = Utilities.base64Decode(match[2]);
+
+  if (bytes.length > 600 * 1024) {
+    throw new Error("Ảnh sau khi nén vẫn quá lớn. Hãy chọn ảnh nhỏ hơn.");
+  }
+
+  const extension = mimeType.indexOf("png") >= 0 ? "png" : "jpg";
+  const safeName = sanitizeFileName_(text_(payload.imageFileName) || productCode || "anh-san-pham");
+  const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd-HHmmss");
+  const blob = Utilities.newBlob(bytes, mimeType, `${safeName}-${timestamp}.${extension}`);
+  const file = getProductImagesFolder_().createFile(blob);
+
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  return `https://drive.google.com/thumbnail?id=${file.getId()}&sz=w800`;
+}
+
+function sanitizeFileName_(value) {
+  return String(value || "anh-san-pham")
+    .replace(/\.[^.]+$/, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "anh-san-pham";
+}
+
+function extractDriveFileId_(url) {
+  const text = String(url || "");
+  const fileMatch = text.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  const idMatch = text.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+
+  return fileMatch ? fileMatch[1] : idMatch ? idMatch[1] : "";
+}
+
+function trashDriveFileFromUrl_(url) {
+  const fileId = extractDriveFileId_(url);
+
+  if (!fileId) {
+    return;
+  }
+
+  try {
+    DriveApp.getFileById(fileId).setTrashed(true);
+  } catch (error) {
+    // Ignore old links the script cannot manage.
+  }
+}
+
 function upsertDriveTextFile_(folder, filename, content) {
   const files = folder.getFilesByName(filename);
 
@@ -560,9 +635,11 @@ function addProduct_(payload) {
   const code = text_(payload.code);
   if (!code || !text_(payload.name)) throw new Error("Thiếu mã hàng hoặc tên hàng.");
   if (readTable_("products").some((product) => product.code === code)) throw new Error("Mã hàng đã tồn tại.");
+  const id = makeId_("product");
+  const imageUrl = saveProductImage_(payload, code);
 
   appendRow_("products", {
-    id: makeId_("product"),
+    id,
     code,
     name: text_(payload.name),
     category: text_(payload.category),
@@ -577,8 +654,31 @@ function addProduct_(payload) {
     isActive: true,
     note: text_(payload.note),
     createdAt: now_(),
+    imageUrl,
   });
   audit_("create", "products", code, `Tạo sản phẩm ${text_(payload.name)}`);
+}
+
+function updateProductImage_(payload) {
+  const productId = text_(payload.productId);
+  const products = readTable_("products");
+  const index = products.findIndex((product) => product.id === productId);
+
+  if (index < 0) {
+    throw new Error("Không tìm thấy sản phẩm cần cập nhật ảnh.");
+  }
+
+  const product = products[index];
+  const oldImageUrl = text_(product.imageUrl);
+  const imageUrl = text_(payload.clearImage) ? "" : saveProductImage_(payload, product.code);
+
+  if (oldImageUrl && oldImageUrl !== imageUrl) {
+    trashDriveFileFromUrl_(oldImageUrl);
+  }
+
+  products[index] = Object.assign({}, product, { imageUrl });
+  writeTable_("products", products);
+  audit_("update", "products", product.code, imageUrl ? "Cập nhật ảnh sản phẩm" : "Gỡ ảnh sản phẩm");
 }
 
 function addCustomer_(payload) {
@@ -974,6 +1074,7 @@ function seedIfEmpty_() {
     supplierId: "supplier-abc",
     minStock: 20,
     isActive: true,
+    imageUrl: "",
     note: "Hàng mẫu",
     createdAt: now_(),
   });

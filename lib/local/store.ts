@@ -144,6 +144,10 @@ function toText(value: FormDataEntryValue | null) {
   return String(value ?? "").trim();
 }
 
+function hasProductImageUpload(formData: FormData) {
+  return Boolean(toText(formData.get("imageData")));
+}
+
 type OrderItemInput = {
   productId: string;
   quantity: number;
@@ -341,6 +345,7 @@ export function useWarehouseStore() {
     formData: FormData,
     localUpdater: (current: WarehouseData) => WarehouseData,
     message: string,
+    options: { usePost?: boolean } = {},
   ): Promise<ActionResult> {
     const sheetConfig = await loadSheetConfig();
 
@@ -348,7 +353,10 @@ export function useWarehouseStore() {
       try {
         setSyncMode("google-sheet");
         setSyncStatus("Đang ghi Google Sheet...");
-        const result = await mutateSheetWithMeta(type, formDataToPayload(formData), sheetConfig);
+        const payload = formDataToPayload(formData);
+        const result = options.usePost
+          ? await postMutateSheetWithMeta(type, payload, sheetConfig)
+          : await mutateSheetWithMeta(type, payload, sheetConfig);
         setData(result.data);
         writeSheetCache(sheetConfig, result.data, result.revision || `mutate-${Date.now()}`);
         setLastMessage(message);
@@ -387,6 +395,7 @@ export function useWarehouseStore() {
           isActive: true,
           note: toText(formData.get("note")),
           createdAt: new Date().toISOString(),
+          imageUrl: toText(formData.get("imageData")) || toText(formData.get("imageUrl")),
         };
 
         return {
@@ -399,6 +408,36 @@ export function useWarehouseStore() {
         };
       },
       "Đã thêm sản phẩm.",
+      { usePost: hasProductImageUpload(formData) },
+    );
+  }
+
+  function updateProductImage(formData: FormData) {
+    return commitRemoteOrLocal(
+      "updateProductImage",
+      formData,
+      (current) => {
+        const productId = toText(formData.get("productId"));
+        const imageUrl = toText(formData.get("clearImage")) ? "" : toText(formData.get("imageData")) || toText(formData.get("imageUrl"));
+        const product = current.products.find((item) => item.id === productId);
+
+        if (!product) {
+          return current;
+        }
+
+        return {
+          ...current,
+          products: current.products.map((item) =>
+            item.id === productId ? { ...item, imageUrl } : item,
+          ),
+          auditLogs: [
+            makeAudit("update", "products", product.code, imageUrl ? "Cập nhật ảnh sản phẩm" : "Gỡ ảnh sản phẩm"),
+            ...current.auditLogs,
+          ],
+        };
+      },
+      "Đã cập nhật ảnh sản phẩm.",
+      { usePost: true },
     );
   }
 
@@ -968,6 +1007,7 @@ export function useWarehouseStore() {
     syncStatus,
     actions: {
       addProduct,
+      updateProductImage,
       addCustomer,
       addSupplier,
       addPurchase,

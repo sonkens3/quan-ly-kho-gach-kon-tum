@@ -70,6 +70,7 @@ export const modulePages: Record<string, ModulePageConfig> = {
       { label: "Hết hàng", value: "0", tone: "red" },
     ],
     columns: [
+      { key: "image", label: "Ảnh", align: "center" },
       { key: "code", label: "Mã hàng" },
       { key: "name", label: "Tên hàng" },
       { key: "size", label: "Kích thước" },
@@ -207,6 +208,7 @@ export const modulePages: Record<string, ModulePageConfig> = {
       { label: "Ngừng bán", value: "0", tone: "slate" },
     ],
     columns: [
+      { key: "image", label: "Ảnh", align: "center" },
       { key: "code", label: "Mã hàng" },
       { key: "name", label: "Tên hàng" },
       { key: "category", label: "Loại" },

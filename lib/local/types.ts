@@ -14,6 +14,7 @@ export type Product = {
   isActive: boolean;
   note: string;
   createdAt: string;
+  imageUrl?: string;
 };
 
 export type Customer = {
