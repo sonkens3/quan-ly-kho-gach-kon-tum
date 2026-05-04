@@ -4,7 +4,7 @@
 
 import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
-import { CalendarDays, Download, Filter, ImageIcon, Loader2, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { CalendarDays, ChevronDown, Download, Filter, ImageIcon, Loader2, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -51,10 +51,71 @@ const maxProductImageSide = 900;
 const maxProductImageBytes = 360 * 1024;
 const productImageSides = [maxProductImageSide, 760, 640];
 const productImageQualities = [0.72, 0.64, 0.56, 0.48];
+const tileSizeOptions = [
+  "7.5x15",
+  "10x20",
+  "10x30",
+  "15x60",
+  "15x80",
+  "20x20",
+  "20x120",
+  "25x25",
+  "25x150",
+  "30x30",
+  "30x45",
+  "30x60",
+  "40x40",
+  "50x50",
+  "60x60",
+  "60x120",
+  "75x75",
+  "75x150",
+  "80x80",
+  "80x160",
+  "90x90",
+  "100x100",
+  "120x120",
+  "120x240",
+];
+const piecesPerBoxOptions = ["1", "2", "3", "4", "5", "6", "8", "10", "12", "15", "16", "20", "24", "25"];
 
 function getImageDataSize(dataUrl: string) {
   const base64 = dataUrl.split(",")[1] ?? "";
   return Math.ceil((base64.length * 3) / 4);
+}
+
+function parseTileSize(value: string) {
+  const match = value
+    .trim()
+    .replace(/,/g, ".")
+    .match(/(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)/);
+
+  if (!match) {
+    return null;
+  }
+
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const widthMeters = width > 100 ? width / 1000 : width / 100;
+  const heightMeters = height > 100 ? height / 1000 : height / 100;
+
+  return { widthMeters, heightMeters };
+}
+
+function calculateSqmPerBox(size: string, pieces: string) {
+  const parsedSize = parseTileSize(size);
+  const parsedPieces = Number(pieces);
+
+  if (!parsedSize || !Number.isFinite(parsedPieces) || parsedPieces <= 0) {
+    return "";
+  }
+
+  return String(Math.round(parsedSize.widthMeters * parsedSize.heightMeters * parsedPieces * 1000) / 1000);
 }
 
 function loadImageFile(file: File) {
@@ -263,7 +324,7 @@ const usageSteps = [
     title: "2. Tạo sản phẩm gạch",
     href: "/products",
     body:
-      "Vào Sản phẩm gạch, bấm Thêm sản phẩm. Nhập mã hàng, tên hàng, loại, kích thước, quy cách viên/thùng, m2/thùng, giá nhập, giá bán, nhà cung cấp và tồn tối thiểu. Mã hàng nên đặt rõ như G6060-A01 để dễ tìm.",
+      "Vào Sản phẩm gạch, bấm Thêm sản phẩm. Nhập mã hàng, tên hàng, loại, kích thước, số viên/thùng, giá nhập, giá bán, nhà cung cấp và tồn tối thiểu. m2/thùng sẽ tự tính theo kích thước và số viên. Mã hàng nên đặt rõ như G6060-A01 để dễ tìm.",
   },
   {
     title: "3. Nhập hàng vào kho",
@@ -386,6 +447,68 @@ function ProductImageCell({
         {target.imageUrl ? "Đổi" : "Thêm"}
       </Button>
     </div>
+  );
+}
+
+function TileSpecificationFields() {
+  const [size, setSize] = useState("60x60");
+  const [piecesPerBox, setPiecesPerBox] = useState("4");
+  const sqmPerBox = calculateSqmPerBox(size, piecesPerBox);
+
+  return (
+    <>
+      <Field label="Kích thước">
+        <div className="relative">
+          <Input
+            name="size"
+            list="tile-size-options"
+            value={size}
+            onChange={(event) => setSize(event.target.value)}
+            placeholder="60x60"
+            className="pr-9"
+          />
+          <ChevronDown className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-slate-400" aria-hidden="true" />
+          <datalist id="tile-size-options">
+            {tileSizeOptions.map((option) => (
+              <option key={option} value={option} />
+            ))}
+          </datalist>
+        </div>
+      </Field>
+
+      <Field label="Viên/thùng">
+        <div className="relative">
+          <Input
+            name="piecesPerBox"
+            type="number"
+            list="pieces-per-box-options"
+            min="0"
+            step="1"
+            value={piecesPerBox}
+            onChange={(event) => setPiecesPerBox(event.target.value)}
+            className="pr-9"
+          />
+          <ChevronDown className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-slate-400" aria-hidden="true" />
+          <datalist id="pieces-per-box-options">
+            {piecesPerBoxOptions.map((option) => (
+              <option key={option} value={option} />
+            ))}
+          </datalist>
+        </div>
+      </Field>
+
+      <Field label="m2/thùng">
+        <Input
+          name="sqmPerBox"
+          type="number"
+          min="0"
+          step="0.001"
+          value={sqmPerBox}
+          readOnly
+          placeholder="Tự tính"
+        />
+      </Field>
+    </>
   );
 }
 
@@ -939,9 +1062,7 @@ function EntryForm({
           <Field label="Mã hàng"><Input name="code" required placeholder="G6060-A02" /></Field>
           <Field label="Tên hàng"><Input name="name" required placeholder="Gạch bóng kính..." /></Field>
           <Field label="Loại"><Input name="category" placeholder="Gạch lát nền" /></Field>
-          <Field label="Kích thước"><Input name="size" placeholder="60x60" /></Field>
-          <Field label="Viên/thùng"><Input name="piecesPerBox" type="number" min="0" step="1" defaultValue="4" /></Field>
-          <Field label="m2/thùng"><Input name="sqmPerBox" type="number" min="0" step="0.01" defaultValue="1.44" /></Field>
+          <TileSpecificationFields />
           <Field label="Giá nhập"><MoneyInput name="importPrice" defaultValue="0" /></Field>
           <Field label="Giá bán"><MoneyInput name="salePrice" defaultValue="0" /></Field>
           <Field label="Nhà cung cấp">
