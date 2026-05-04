@@ -1338,7 +1338,7 @@ export function LocalWorkspacePage({ pageKey }: { pageKey: PageKey }) {
           </Button>
         </div>
 
-        <div className="table-scroll overflow-x-auto">
+        <div className="table-scroll max-h-[calc(100vh-360px)] min-h-[320px] overflow-auto overscroll-contain scroll-smooth">
           <table className="w-full min-w-[760px] border-separate border-spacing-0 text-sm">
             <thead>
               <tr className="bg-slate-50 text-left text-xs uppercase text-slate-500">
@@ -1346,7 +1346,7 @@ export function LocalWorkspacePage({ pageKey }: { pageKey: PageKey }) {
                   <th
                     key={column.key}
                     className={cn(
-                      "border-b border-slate-200 px-4 py-3 font-semibold",
+                      "sticky top-0 z-10 border-b border-slate-200 bg-slate-50 px-4 py-3 font-semibold",
                       column.align === "right" && "text-right",
                       column.align === "center" && "text-center",
                     )}

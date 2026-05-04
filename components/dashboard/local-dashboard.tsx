@@ -5,14 +5,12 @@ import {
   Boxes,
   CircleDollarSign,
   ClipboardList,
-  ReceiptText,
   ShieldCheck,
   ShoppingCart,
   Truck,
   WalletCards,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { MetricCard } from "@/components/dashboard/metric-card";
 import { AutoFileBackupAgent } from "@/components/local/auto-file-backup-agent";
 import { formatCurrency, formatDate, formatNumber } from "@/lib/formatters";
@@ -58,20 +56,10 @@ export function LocalDashboard() {
     <div className="space-y-5">
       <AutoFileBackupAgent data={data} />
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div>
         <div>
           <p className="text-sm font-medium text-cyan-700">Tổng quan</p>
           <h1 className="mt-1 text-2xl font-semibold text-slate-950">Bảng điều khiển</h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" size="sm">
-            <ReceiptText className="h-4 w-4" aria-hidden="true" />
-            In nhanh
-          </Button>
-          <Button size="sm">
-            <ShoppingCart className="h-4 w-4" aria-hidden="true" />
-            Tạo đơn bán
-          </Button>
         </div>
       </div>
 
